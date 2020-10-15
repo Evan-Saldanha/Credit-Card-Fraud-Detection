@@ -1,0 +1,656 @@
+---
+title: 'Analytathon 2: Credit Card Fraud Prediction'
+author: "Evan Ganson Saldanha"
+date: "29/03/2019"
+output:
+  pdf_document: default
+  word_document: default
+  html_document: default
+---
+
+
+
+
+```{r setup, include=FALSE} 
+#Global chunk option
+knitr::opts_chunk$set(echo = FALSE, results = "hide", warning = FALSE, fig.align = 'center',cache = TRUE)
+```
+
+```{r message=FALSE, warning = FALSE}
+#Installing and Loading all the necessary libararies
+
+
+if(!require(rpart.plot)) install.packages("rpart.plot")
+if(!require(DMwR)) install.packages("DMwR")
+if(!require(naivebayes)) install.packages("naivebayes")
+if(!require(caTools)) install.packages("caTools")
+if(!require(ggplot2)) install.packages("ggplot2")
+if(!require(tidyverse)) install.packages("tidyverse")
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(caret)) install.packages("caret")
+if(!require(corrplot)) install.packages("corrplot")
+if(!require(funModeling)) install.packages("funModeling")
+if(!require(Hmisc)) install.packages("Hmisc")
+if(!require(Matrix)) install.packages("Matrix")
+if(!require(dummies)) install.packages("dummies")
+if(!require(e1071)) install.packages("e1071")
+if(!require(ranger)) install.packages("ranger")
+if(!require(factoextra)) install.packages("factoextra")
+if(!require(FactoMineR)) install.packages("FactoMineR")
+if(!require(gridExtra)) install.packages("gridExtra")
+if(!require(NbClust)) install.packages("NbClust")
+if(!require(tinytex)) install.packages("tinytex")
+
+library(tidyverse)
+library(ggplot2)
+library(corrplot)
+library(funModeling)
+library(Hmisc)
+library(Matrix)
+library(dplyr)
+library(caret)
+library(dummies)
+library(e1071)
+library(ranger)
+library(factoextra)
+library(FactoMineR)
+library(tinytex)
+library(rpart.plot)
+library(NbClust)
+library(DMwR)
+library(rpart)
+library(naivebayes)
+library(caTools)
+library(gridExtra)
+#memory.limit(size=56000)
+
+```
+
+##Objective:
+
+To explore the given credit card fraud data-set with the aim to predict the factors that lead to fraud 
+
+
+```{r }
+#reading the data given
+set.seed(123)
+fraud_data <- read.csv('fraud.csv') 
+```
+
+##Exploring Dataset:
+
+The data set consisted of 594,643 observation and 10 variable, of which 7 are factors, three are numerical variable. The data was highly imbalanced as the percentage of non-fraudulent data was 98.8% whereas the fraudulent data made just 1.2% of the total observations (as shown in Fig 1). Fig 2 shows the fraud distribution by each category and amount.
+
+```{r include=FALSE}
+set.seed(123)
+#plotting the Fraud percentage in whole data set
+ggplot(fraud_data, aes(x= fraud)) + 
+    geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") +
+    geom_text(aes( label = scales::percent(..prop..),
+                   y= ..prop.. ), stat= "count", vjust = -.5) +
+    labs(y = "Percent", fill="Fraud") +
+    scale_y_continuous(labels = scales::percent)+
+    ggtitle("Fig 1: Percentage of Fraud and Non-fraud data")
+```
+
+
+```{r include=FALSE}
+#Exploratorty Data Analysis
+head(fraud_data)
+str(fraud_data)
+any(is.na(fraud_data))
+dim(fraud_data)
+summary(fraud_data)
+freq(fraud_data)
+skimr::skim(fraud_data)
+```
+
+```{r}
+set.seed(123)
+
+#removing unnecessary Variables and observations
+fraud_data3 <- fraud_data %>%
+  select(-c(zipcodeOri, zipMerchant,step, customer))%>%
+  filter(amount >= 0.03)
+
+head(fraud_data3)
+```
+
+```{r}
+set.seed(123)
+#Dealing with response variable. Converting the response variable from numeric to factor
+#and labeling Yes and No
+fraud_data3$fraud <- factor(fraud_data3$fraud)
+levels(fraud_data3$fraud) <- c("No", "Yes")
+
+head(fraud_data3)
+```
+
+```{r fig.width=12}
+set.seed(123)
+#plotting the Fraud percentage in whole data set
+fig1 <- ggplot(fraud_data, aes(x= fraud)) + 
+    geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") +
+    geom_text(aes( label = scales::percent(..prop..),
+                   y= ..prop.. ), stat= "count", vjust = -.5) +
+    labs(y = "Percent", fill="Fraud") +
+    scale_y_continuous(labels = scales::percent)+
+    ggtitle("Fig 1: Percentage of Fraud and Non-fraud data")
+
+
+fig2 <- ggplot(fraud_data3, aes(x = amount, y = category, color=fraud)) +
+  geom_point() +
+  ggtitle('Fig2: Fraud distribution by Category') +
+  scale_colour_manual(values=c(No = 'blue4',Yes = 'chartreuse')) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_vline(xintercept = 2150)
+
+
+grid.arrange(fig1,fig2, nrow=1, ncol=2)
+```
+
+
+##Exploratorty Data Analysis:
+
+The analysis of data began with the removal of zero variance column such as 'zipcodeOri' and 'zipMerchant' and also the near-zero variance such as 'step' and 'customer'. Furthermore, the observation with the negligible amount(below 0.03) never had any frauds, hence such rows were filtered to reduce the data size. The response variable ('fraud'), was still a numeric variable which was transformed to factor where 0 and 1 resulted in 'No' and 'Yes' respectively. 
+
+
+##Data Partitioning and Balancing:
+
+The tidy data was further split into 80% and 20% termed as train and test data respectively. The proportion of fraudulent data was just 1.2% whereas the majority was of non-fraudulent data with 98.8%. Hence SMOTE (Synthetic Minority Over-sampling Technique) function which oversamples the train data using bootstrap and k-nearest neighbour approach was utilized for balancing, which resulted in the fraudulent data to be 48% and 52% of non-fradulent data.
+```{r}
+
+set.seed(123)
+# to simulate the real word scenario, creating the train and the test sets 
+# the train set should be consisted of 80% of randomly selected observations
+# while the test set should be consisted of the remaining 20%
+in_train <- createDataPartition(fraud_data3$fraud, p = 0.8, list = FALSE) # caret's method for creating train/test partitions
+                                                            # returns indexes of observations that should be included in the train set
+
+fraud_train <- fraud_data3[in_train, ]
+fraud_test <- fraud_data3[-in_train, ]
+
+# to investigate whether the representative sets are taken
+# lets compare the proportion of fraudes in the `fraud`, `fraud_train` and `fraud_test` datasets
+# Result: we can see that the representative samples are taken
+prop.table(table(fraud_data3$fraud))
+prop.table(table(fraud_train$fraud))
+prop.table(table(fraud_test$fraud))
+
+```
+
+```{r}
+#Balancing the train data using SMOTE
+fraud_train_bal <- SMOTE(fraud ~ ., data = fraud_train, perc.over = 500, perc.under = 130)
+prop.table(table(fraud_train_bal$fraud))
+```
+
+
+
+```{r}
+set.seed(123)
+# using the `fraud_train` dataset, let's separate predictors (V1:V60) from the response variable (fraud)
+fraud_x <- fraud_train_bal %>% 
+  select(-fraud) # or alternatively fraud_x <- fraud_copy[, 1:60]
+
+fraud_y <- fraud_train_bal %>% 
+  select(fraud) %>% 
+  pull() # or alternatively fraud_y <- fraud_train$fraud
+
+# double check whether the correct variables are selected
+# NOTE: if there is ID variable in the predictor dataset, make sure that you remove it as well
+#       (there is no such variable in fraud dataset, so no extra removal is required)
+head(fraud_x)
+head(fraud_y)
+
+# investigate the proportion of M and R fraudes in the response variable
+prop.table(table(fraud_y))
+
+```
+
+```{r}
+
+set.seed(123)
+# create train indexes which will be used in 5-Fold CV
+myFolds <- createFolds(fraud_y, k = 5)
+
+# compare the proportion of Yes and NO in fraudes
+prop.table(table(fraud_y)) # entire fraud_train dataset
+prop.table(table(fraud_y[myFolds$Fold1])) # Fold1, similarly for the rest 
+
+# we can see that each fold have a similar proportion of Yes and NO
+```
+
+##Classification models:
+
+A classification model attempts to make some inference from the information given for training. Since this is a the two-class classification problem and the prediction was on the response variable 'fraud', various models can be chosen under classification to predict the fraud. Among all the model, the following three models best suited this problem:  
+  1. Decision Tree  
+  2. Naïve Bayes  
+  3. Random Forest  
+  
+Having the balanced and cleaned train data in hand, the above models were fitted onto this train data set and best model was chosen based on ROC, sensitivity and specificity. Roc is the probability curve, sensitivity is a proportion of positive results(results that were truly positive) whereas the specificity is the proportion of negative result(results that were truly negative).
+
+```{r}
+set.seed(123)
+# create unique configuration which will be shared across all classification models 
+ctrl <- trainControl(
+  method = "cv", # used for configuring resampling method: in this case cross validation 
+  number = 5, # instruct that it is 5 fold-cv
+  index = myFolds, # folds' indexes
+  summaryFunction = twoClassSummary, # use AUC metric to rank the models
+  classProbs = TRUE,
+  verboseIter = FALSE, # print output of each step
+  savePredictions = TRUE, 
+  preProcOptions = list(thresh = 0.8)
+  # in case that PCA preprocessing option is selected in the train() function
+                                      # indicates a cutoff for the cumulative percent of variance to be retained by PCA
+)
+```
+
+###1.Decision tree: 
+  A Decision tree is a graph that uses a branching method to divide the data based on a decision made. On trying the two instances of decision tree model namely, default and auto (tuneLength = 20), the accuracy of ROC/AUC (Area under the curve) for decision tree auto was 99.43% compared to default which had an accuracy of 98.99%. Figure 3 below, shows the representation of ROC along with sensitivity and specificity for both instances of the decision tree. The figure Fig 4, shows the important variable that influence this model.
+```{r}
+set.seed(123)
+
+# The list of configuration parameters for the rpart model: 
+modelLookup("rpart")
+
+# We can see that tthe rpart method has only one parameter `cp` - Complexity parameter
+
+# perform data-preprocessing step which will perform data centering & scaling and remove variables with zero variance
+# train DT model using default CARET parametres
+# caret randomly selects 3 values of the CP parametre and for each performs 5-fold-cv
+# and as the best parameter selects the one for which the model has the highest AUC score
+model_dt_default <- train(
+  x = fraud_x, # predictors dataset
+  y = fraud_y, # response variable
+  method = "rpart", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = ctrl, # training configuration
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+# model summary
+model_dt_default
+
+# the optimal hyperparameter value(s)
+model_dt_default$bestTune
+
+```
+
+```{r}
+set.seed(123)
+# instead of randomly selecting 3 parametres 
+# let's instruct CARET to randomly select 20 different hyperparameter values, and select the one for which the model has the highest AUC score
+model_dt_auto <- train(
+  x = fraud_x, # predictors dataset
+  y = fraud_y, # response variable
+  method = "rpart", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = ctrl, # training configuration
+  tuneLength = 20, # caret's random selection of tuning parametres
+  #tuneGrid = expand.grid()
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+# model summary
+model_dt_auto
+
+# the optimal hyperparameter value(s)
+model_dt_auto$bestTune
+```
+
+```{r include=FALSE}
+set.seed(123)
+# we can see that although different `cp` parametres are selected as optimal,
+# there is no difference in predictive performance between these 2 models (the same AUC were reported)
+model_dt_default$results[which.max(model_dt_default$results$ROC), ]
+model_dt_auto$results[which.max(model_dt_auto$results$ROC), ]
+
+# inspect the impact of `cp` values on predictive perforormances of these two models
+plot(model_dt_default)
+plot(model_dt_auto)
+
+# inspect the variable importance, in the default DT model
+# we can see that only 12 out of 60 variables are significant for the model (others can be removed)
+plot(varImp(model_dt_default))
+```
+
+
+```{r}
+set.seed(123)
+# compaing the performance of these 4 models
+
+dt_resample <- resamples(
+  list(
+    dt_default = model_dt_default,
+    dt_auto = model_dt_auto
+  )
+)
+#resample summary
+summary(dt_resample)
+```
+
+```{r include=FALSE}
+#plotting the resamplings on plots
+dotplot(dt_resample)
+bwplot(dt_resample)
+```
+```{r}
+par(mfrow=c(2,2))
+p1<- dotplot(dt_resample, main= "Fig 3: Dotplot for DT model instances")
+p2<- plot(varImp(model_dt_default), main = "Fig 4: Important variables")
+
+grid.arrange(p1,p2, nrow=1)
+```
+
+
+
+
+```{r include=FALSE}
+
+# plot DT in which the variables are not transformed using PCA
+prp(model_dt_default$finalModel)
+
+prp(model_dt_auto$finalModel, cex=0.5)
+```
+
+###2. Naïve Bayes:
+Naïve Bayes is a group of "probabilistic classifiers" in light of applying Bayes' theorem with strong assumption among the features. Similar to the decision tree, on trying the two instances of Naïve Bayes model namely, default and manual(manually specifying the parameters), the accuracy of ROC/AUC (Area under the curve) for both the models seems to match each other which is 99.7%. Figure 5 below, shows the representation of ROC along with sensitivity and specificity for both instances of Naïve Bayes. Figure 6, shows the important variable that influences this model.
+
+```{r warning=FALSE, include=FALSE}
+set.seed(123)
+
+# The list of configuration parameters for the NB model: 
+modelLookup("naive_bayes")
+
+# We can see that the NB method has 3 hyperparameters 
+#   model parameter                label forReg forClass probModel
+# 1    nb   laplace   Laplace Correction  FALSE     TRUE      TRUE
+# 2    nb usekernel    Distribution Type  FALSE     TRUE      TRUE
+# 3    nb    adjust Bandwidth Adjustment  FALSE     TRUE      TRUE
+
+# `usekernel`	if TRUE a kernel density estimate (density) is used for density estimation. If FALSE a guassian density estimate.
+# `laplace` Factor for Laplace correction, default factor is 0, i.e. no correction.
+# `adjust` allows us to adjust the bandwidth of the kernel density, default value is 1. Larger numbers mean more flexible density estimate
+
+
+# perform data-preprocessing step which will perform data centering & scaling and remove variables with zero variance
+# train NB model using default CARET parametres
+# caret keeps fL=0, adjust=1 as constant, and only varies usekernel parameter.
+model_nb_default <- train(
+  x = fraud_x, # predictors dataset
+  y = fraud_y, # response variable
+  method = "naive_bayes", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = ctrl, # training configuration
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+# model summary
+model_nb_default
+
+# the optimal hyperparameter value(s)
+model_nb_default$bestTune
+
+# inspect the impact of different hyperparameter settings on the predictive perforormances of the model
+plot(model_nb_default)
+
+# inspect the variable importance, in the default NB model
+plot(varImp(model_nb_default))
+```
+
+```{r include=FALSE}
+# because by default CARET does not use laplacian correction (i.e laplace=0), 
+# let's manually set up hyperparameters grid to see if we can improve the results
+
+model_nb_manual <- train(
+  x = fraud_x, # predictors dataset
+  y = fraud_y, # response variable
+  method = "naive_bayes", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = ctrl, # training configuration
+  tuneGrid = expand.grid(
+    usekernel = c(TRUE, FALSE),
+    laplace = 0:5,
+    adjust = 1:5
+  ),
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+                                          # pca - perform PCA transformation on input dataset (retain only those PCs that explain 80% variance)
+)
+
+# model summary
+model_nb_manual
+
+# the optimal hyperparameter value(s)
+model_nb_manual$bestTune
+
+# inspect the impact of different hyperparameter settings on the predictive performances of the model
+# we can see that there is no improvement in performance when compared to the `model_nb_default` as 
+# the same hyperparameters were chosen as optimal
+plot(model_nb_manual)
+
+# inspect the variable importance of the `model_nb_default`
+plot(varImp(model_nb_default))
+```
+
+
+
+
+```{r warning=FALSE, include=FALSE}
+# comparing the performance of these 3 models
+
+nb_resample <- resamples(
+  list(
+    nb_default = model_nb_default,
+    nb_manual = model_nb_manual
+  )
+)
+
+summary(nb_resample)
+
+dotplot(nb_resample)
+bwplot(nb_resample)
+```
+```{r}
+par(mfrow=c(2,2))
+p1<- dotplot(nb_resample, main= "Fig 5: Dotplot Naïve Bayes")
+p2<- plot(varImp(model_nb_default), main = "Fig 6: Important variables")
+
+grid.arrange(p1,p2, nrow=1)
+```
+
+###3. Random Forest: 
+  Random forest is a combination of many decision trees but unlike decision tree, there is no overfitting of data. Just like the previous models, on fitting the three variations of Random Forest model namely, default, auto (tuneLength = 20) and manual(manually specifying the parameters), the accuracy of ROC/AUC (Area under the curve) all three instances are as follows:  
+  ->  ranger default: 0.9972528  
+  ->  ranger auto   : 0.9972885  
+  ->  ranger manual: 0.9970779  
+  
+   Figure 7 below, shows the representation of ROC along with sensitivity and specificity for all the instances of Random forest. The figure 8, shows the important variable that influences this model.
+
+
+```{r warning=FALSE, message=FALSE}
+set.seed(123)
+
+# The list of configuration parameters for the rpart model: 
+modelLookup("ranger")
+
+# We can see that the RANGER method has has 3 hyperparameters:
+#    model     parameter                         label forReg forClass probModel
+# 1 ranger          mtry #Randomly Selected Predictors   TRUE     TRUE      TRUE
+# 2 ranger     splitrule                Splitting Rule   TRUE     TRUE      TRUE
+# 3 ranger min.node.size             Minimal Node Size   TRUE     TRUE      TRUE
+
+
+# performing data-preprocessing step which will perform data centering & scaling and remove variables with zero variance
+# train RANGER model using default CARET parametres
+model_ranger_default <- train(
+  x = fraud_x, # predictors dataset
+  y = fraud_y, # response variable
+  method = "ranger", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = ctrl, # training configuration
+  importance = "impurity", # this needs to be added only for `ranger` for identifying variable importance
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+# model summary
+model_ranger_default
+
+# the optimal hyperparameter value(s)
+model_ranger_default$bestTune
+```
+
+```{r warning=FALSE, message=FALSE}
+# instead of randomly selecting 3 mtree values 
+# let's instruct CARET to randomly select 20 different mtree values, and select the one for which the model has the highest AUC score
+model_ranger_auto <- train(
+  x = fraud_x, # predictors dataset
+  y = fraud_y, # response variable
+  method = "ranger", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = ctrl, # training configuration
+  importance = "impurity", # this needs to be added only for `ranger` for identifying variable importance
+  tuneLength = 20, # caret's random selection of tuning parametres
+  # tuneGrid = expand.grid()
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+# model summary
+model_ranger_auto
+
+# the optimal hyperparameter value(s)
+model_ranger_auto$bestTune
+```
+
+```{r include=FALSE}
+# we can see that the model `model_ranger_default` performs better than the model `model_ranger_auto`
+model_ranger_default$results[which.max(model_ranger_default$results$ROC), ]
+model_ranger_auto$results[which.max(model_ranger_auto$results$ROC), ]
+
+# inspect the impact of different hyperparameter settings on predictive perforormances of these two models
+plot(model_ranger_default)
+plot(model_ranger_auto)
+
+# inspect the variable importance, in the default DT model
+plot(varImp(model_ranger_default))
+
+# from the summary output, we can see that the model `model_ranger_auto` has the best performance
+
+```
+
+
+```{r include=FALSE}
+model_ranger_manual <- train(
+  x = fraud_x, # predictors dataset
+  y = fraud_y, # response variable
+  method = "ranger", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = ctrl, # training configuration
+  importance = "impurity", # this needs to be added only for `ranger` for identifying variable importance
+  tuneGrid = expand.grid(
+    mtry = 3:5,
+    splitrule = c("gini", "extratrees"),
+    min.node.size = 1
+  ),
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+# model summary
+model_ranger_manual
+
+# the optimal hyperparameter value(s)
+model_ranger_manual$bestTune
+
+# inspecting the impact of different hyperparameter settings on predictive perforormances of the model
+plot(model_ranger_manual)
+```
+
+```{r include=FALSE}
+
+# comparing the performance of these 3 models
+ranger_resample <- resamples(
+  list(
+    ranger_default = model_ranger_default,
+    ranger_auto = model_ranger_auto,
+    ranger_manual = model_ranger_manual
+  )
+)
+
+summary(ranger_resample)
+
+#plotting to get better comparision over ranger
+dotplot(ranger_resample)
+bwplot(ranger_resample)
+```
+```{r fig.height=4}
+par(mfrow=c(2,2))
+p1<- dotplot(ranger_resample, main= "Fig 7: Dotplot: Random Forest")
+p2<- plot(varImp(model_ranger_default), main = "Fig 8: Important variables")
+
+grid.arrange(p1,p2, nrow=1)
+```
+
+## Performance comparison
+
+Comparing the performance of all the 3 model category by plotting them in a dot plot as shown in below figure:
+```{r fig.height=3}
+#comparision of performance of all the 3 model category
+all_resamples <- resamples(
+  list(
+    # decision trees
+    dt_default = model_dt_default,
+    dt_auto = model_dt_auto,
+ 
+    # naive bayes
+    nb_default = model_nb_default,
+    nb_manual = model_nb_manual,
+    
+    # random forests
+    ranger_default = model_ranger_default,
+    ranger_auto = model_ranger_auto,
+    ranger_manual = model_ranger_manual
+    
+    
+  )
+)
+summary(all_resamples)
+
+dotplot(all_resamples, main="Fig 9: Performance comparison of 3 models")
+```
+Taking ROC(probability curve) as the deciding factor the auto model of Random forest has the highest value of 0.9972885.
+
+
+##Prediction:
+
+Random forest being an optimal model to do prediction on the unbalanced test data set, we obtain the accuracy of 97.7% through confusion matrix. To put in terms of response variable format, out of 1440 available frauds, the model accurately predicts 1338 frauds (as shown below ).
+```{r}
+# we can see that the random forest model `model_ranger_default` has the best performance
+# let's inspect its generalisation performance using the fraud_test dataset which is unbalanced
+
+ranger_predictions <- predict(model_ranger_default, newdata = select(fraud_test, -fraud)) # return predicted classes
+conf_matrix <- confusionMatrix(ranger_predictions, fraud_test$fraud, positive = "Yes") # confusion matrix, Accuracy, Sensitivity, ...
+conf_matrix$table
+```
+
+```{r fig.height=3}
+fourfoldplot(conf_matrix$table,color = c("#CC6666", "#99CC99"),
+             conf.level = 0, main = "Fig 10: confusion matrix")
+                
+```
+
+In a ROC curve (Fig below) the Sensitivity (true positive rate) is being plotted in the method of the 100-Specificity (false positive rate) for various cut-off points.
+
+```{r fig.height=4}
+# return predicted class probabilities
+ranger_class_probs <- predict(model_ranger_default, newdata = select(fraud_test, -fraud), type="prob") 
+
+# calculate AUC and plot ROC Curve
+colAUC(ranger_class_probs, fraud_test$fraud, plotROC = TRUE)
+
+```
+
+##Conclusion:
+
+The prediction model takes consideration mainly the three variables which are: amount, category and merchant. By focusing on the top candidates in each of these three categories, and taking some precautionary measures to avoid the customers or the bank to become a victim of such frauds would lower the fraud rate and also improve the trust of the customers on the Bank.
+
